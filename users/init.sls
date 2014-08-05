@@ -26,7 +26,11 @@
     - name: {{ home }}
     - user: {{ name }}
     - group: {{ user_group }}
+    {%- if user == 'root' %}
+    - mode: 0700
+    {%- else %}
     - mode: 0755
+    {%- endif %}
     - require:
       - user: {{ name }}
       - group: {{ user_group }}
