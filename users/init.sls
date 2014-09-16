@@ -26,11 +26,7 @@
     - name: {{ home }}
     - user: {{ name }}
     - group: {{ user_group }}
-    {%- if user == 'root' %}
-    - mode: 0700
-    {%- else %}
-    - mode: 0755
-    {%- endif %}
+    - mode: {{ user.get('user_dir_mode', '0750') }}
     - require:
       - user: {{ name }}
       - group: {{ user_group }}
@@ -44,7 +40,7 @@
   user.present:
     - name: {{ name }}
     - home: {{ home }}
-    - shell: {{ user.get('shell', '/bin/bash') }}
+    - shell: {{ user.get('shell', users.get('shell', '/bin/bash')) }}
     {% if 'uid' in user -%}
     - uid: {{ user['uid'] }}
     {% endif -%}
@@ -59,6 +55,9 @@
     {% if 'fullname' in user %}
     - fullname: {{ user['fullname'] }}
     {% endif -%}
+    {% if not user.get('createhome', True) %}
+    - createhome: False
+    {% endif %}
     - groups:
       - {{ user_group }}
       {% for group in user.get('groups', []) -%}
@@ -127,6 +126,17 @@ ssh_auth_{{ name }}_{{ loop.index0 }}:
 {% endfor %}
 {% endif %}
 
+{% if 'ssh_auth.absent' in user %}
+{% for auth in user['ssh_auth.absent'] %}
+ssh_auth_delete_{{ name }}_{{ loop.index0 }}:
+  ssh_auth.absent:
+    - user: {{ name }}
+    - name: {{ auth }}
+    - require:
+        - file: {{ name }}_user
+        - user: {{ name }}_user
+{% endfor %}
+{% endif %}
 
 {% if 'sudouser' in user and user['sudouser'] %}
 {% if not used_sudo %}
@@ -145,7 +155,8 @@ sudoer-{{ name }}:
 {% for rule in user['sudo_rules'] %}
 "validate {{ name }} sudo rule {{ loop.index0 }} {{ name }} {{ rule }}":
   cmd.run:
-    - name: 'visudo -cf - <<<"$rule"'
+    - name: 'visudo -cf - <<<"$rule" | { read output; if [[ $output != "stdin: parsed OK" ]] ; then echo $output ; fi }'
+    - stateful: True
     - shell: {{ users.visudo_shell }} 
     - env:
       # Specify the rule via an env var to avoid shell quoting issues.
