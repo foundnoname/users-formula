@@ -4,11 +4,24 @@
 {% set used_googleauth = [] %}
 {% set used_user_files = [] %}
 
+{% for group, setting in salt['pillar.get']('groups', {}).items() %}
+users_group_{{ setting.get('state', "present") }}_{{ group }}:
+  group.{{ setting.get('state', "present") }}:
+    - name: {{ group }}
+    {%- if setting.get('gid') %}
+    - gid: {{setting.get('gid')  }}
+    {%- endif %}
+    - system: {{ setting.get('system',"False") }}
+{% endfor %}
+
 {%- for name, user in pillar.get('users', {}).items()
         if user.absent is not defined or not user.absent %}
 {%- if user == None -%}
 {%- set user = {} -%}
 {%- endif -%}
+{%- if 'sudoonly' in user and user['sudoonly'] %}
+{%- set _dummy=user.update({'sudouser': True}) %}
+{%- endif %}
 {%- if 'sudouser' in user and user['sudouser'] %}
 {%- do used_sudo.append(1) %}
 {%- endif %}
@@ -47,6 +60,7 @@ include:
 {%- set user_group = name -%}
 {%- endif %}
 
+{%- if not ( 'sudoonly' in user and user['sudoonly'] ) %}
 {% for group in user.get('groups', []) %}
 users_{{ name }}_{{ group }}_group:
   group.present:
@@ -55,6 +69,16 @@ users_{{ name }}_{{ group }}_group:
     - system: True
     {% endif %}
 {% endfor %}
+
+{# in case home subfolder doesn't exist, create it before the user exists #}
+{% if user.get('createhome', True) %}
+users_{{ name }}_user_prereq:
+  file.directory:
+    - name: {{ salt['file.dirname'](home) }}
+    - makedirs: True
+    - prereq:
+      - user: users_{{ name }}_user
+{%- endif %}
 
 users_{{ name }}_user:
   {% if user.get('createhome', True) %}
@@ -80,7 +104,9 @@ users_{{ name }}_user:
     {% endif %}
   user.present:
     - name: {{ name }}
+    {% if user.get('createhome', True) -%}
     - home: {{ home }}
+    {% endif -%}
     - shell: {{ user.get('shell', current.get('shell', users.get('shell', '/bin/bash'))) }}
     {% if 'uid' in user -%}
     - uid: {{ user['uid'] }}
@@ -122,6 +148,12 @@ users_{{ name }}_user:
     {% if not user.get('createhome', True) %}
     - createhome: False
     {% endif %}
+    {% if not user.get('unique', True) %}
+    - unique: False
+    {% endif %}
+    {%- if grains['saltversioninfo'] >= [2018, 3, 1] %}
+    - allow_gid_change: {{ users.allow_gid_change if 'allow_gid_change' not in user else user['allow_gid_change'] }}
+    {%- endif %}
     {% if 'expire' in user -%}
         {% if grains['kernel'].endswith('BSD') and
             user['expire'] < 157766400 %}
@@ -195,7 +227,12 @@ users_{{ name }}_{{ key_name }}_key:
     - mode: 600
       {% endif %}
     - show_diff: False
+    {%- set key_value = salt['pillar.get']('users:'+name+':ssh_keys:'+_key) %}
+    {%- if 'salt://' in key_value[:7] %}
+    - source: {{ key_value }}
+    {%- else %}
     - contents_pillar: users:{{ name }}:ssh_keys:{{ _key }}
+    {%- endif %}
     - require:
       - user: users_{{ name }}_user
       {% for group in user.get('groups', []) %}
@@ -341,8 +378,14 @@ users_ssh_known_hosts_{{ name }}_{{ loop.index0 }}:
     {% if 'enc' in host %}
     - enc: {{ host['enc'] }}
     {% endif -%}
-    {% if 'hash_hostname' in host %}
-    - hash_hostname: {{ host['hash_hostname'] }}
+    {% if 'hash_known_hosts' in host %}
+    - hash_known_hosts: {{ host['hash_known_hosts'] }}
+    {% endif -%}
+    {% if 'timeout' in host %}
+    - timeout: {{ host['timeout'] }}
+    {% endif -%}
+    {% if 'fingerprint_hash_type' in host %}
+    - fingerprint_hash_type: {{ host['fingerprint_hash_type'] }}
     {% endif -%}
 {% endfor %}
 {% endif %}
@@ -354,6 +397,7 @@ users_ssh_known_hosts_delete_{{ name }}_{{ loop.index0 }}:
     - user: {{ name }}
     - name: {{ host }}
 {% endfor %}
+{% endif %}
 {% endif %}
 
 {% set sudoers_d_filename = name|replace('.','_') %}
@@ -456,8 +500,9 @@ users_googleauth-{{ svc }}-{{ name }}:
 #    - require_in:
 #      - sls: users
 #
-{% if 'gitconfig' in user %}
 {% if salt['cmd.has_exec']('git') %}
+
+{% if 'gitconfig' in user %}
 {% for key, value in user['gitconfig'].items() %}
 users_{{ name }}_user_gitconfig_{{ loop.index0 }}:
   {% if grains['saltversioninfo'] >= [2015, 8, 0, 0] %}
@@ -475,6 +520,18 @@ users_{{ name }}_user_gitconfig_{{ loop.index0 }}:
     {% endif %}
 {% endfor %}
 {% endif %}
+
+{% if 'gitconfig.absent' in user and grains['saltversioninfo'] >= [2015, 8, 0, 0] %}
+{% for key in user.get('gitconfig.absent') %}
+users_{{ name }}_user_gitconfig_absent_{{ key }}:
+  git.config_unset:
+    - name: '{{ key }}'
+    - user: {{ name }}
+    - global: True
+    - all: True
+{% endfor %}
+{% endif %}
+
 {% endif %}
 
 {% endfor %}
